@@ -1,35 +1,43 @@
-import time
-from google import genai
-from config import GEMINI_API_KEY, DEFAULT_MODEL, MAX_RETRIES, RETRY_DELAY
-from utils import get_logger
+"""
+llm/client.py — Thin wrapper around the Google Generative AI SDK.
+"""
+
+from __future__ import annotations
+
+import google.generativeai as genai
+
+from config import GEMINI_API_KEY, GEMINI_MODEL, LLM_CONFIG
+from utils import get_logger, retry
 
 logger = get_logger(__name__)
 
-class LLMClient:
-   """Gemini API client"""
-  
-   def __init__(self, model_name=DEFAULT_MODEL, max_retries=MAX_RETRIES, retry_delay=RETRY_DELAY):
-       self.model_name = model_name
-       self.max_retries = max_retries
-       self.retry_delay = retry_delay
-       self.client = genai.Client(api_key=GEMINI_API_KEY)
+_model: genai.GenerativeModel | None = None
 
-   def call(self, prompt: str, **kwargs) -> str:
-       """Send prompt to Gemini API"""
-       for attempt in range(self.max_retries + 1):
-           try:
-               response = self.client.models.generate_content(
-                   contents=prompt,
-                   model=self.model_name,
-                   **kwargs
-               )
-               if response and response.text:
-                   return response.text.strip()
-               else:
-                   raise Exception("Empty response received")
-              
-           except Exception as e:
-               if attempt == self.max_retries:
-                   raise Exception(f"API call failed after {self.max_retries + 1} attempts: {e}")
-              
-               time.sleep(self.retry_delay * (2 ** attempt))
+
+def _get_model() -> genai.GenerativeModel:
+    global _model
+    if _model is None:
+        if not GEMINI_API_KEY:
+            raise EnvironmentError(
+                "GEMINI_API_KEY is not set. "
+                "Add it to Streamlit Cloud secrets or your .env file."
+            )
+        genai.configure(api_key=GEMINI_API_KEY)
+        _model = genai.GenerativeModel(
+            model_name=GEMINI_MODEL,
+            generation_config=genai.types.GenerationConfig(**LLM_CONFIG),
+        )
+        logger.info("Gemini model '%s' initialised.", GEMINI_MODEL)
+    return _model
+
+
+@retry(max_attempts=3, delay=2.0, exceptions=(Exception,))
+def generate(prompt: str) -> str:
+    model = _get_model()
+    logger.debug("Sending prompt to Gemini (length=%d chars).", len(prompt))
+    response = model.generate_content(prompt)
+    if not response.text:
+        finish_reason = getattr(response.candidates[0], "finish_reason", "UNKNOWN")
+        raise RuntimeError(f"Gemini returned empty response. finish_reason={finish_reason}")
+    logger.debug("Received response (length=%d chars).", len(response.text))
+    return response.text
