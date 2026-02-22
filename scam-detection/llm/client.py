@@ -1,43 +1,51 @@
 """
-llm/client.py — Thin wrapper around the Google Generative AI SDK.
+llm/client.py — Gemini API client using google-genai SDK.
 """
 
 from __future__ import annotations
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from config import GEMINI_API_KEY, GEMINI_MODEL, LLM_CONFIG
 from utils import get_logger, retry
 
 logger = get_logger(__name__)
 
-_model: genai.GenerativeModel | None = None
+_client: genai.Client | None = None
 
 
-def _get_model() -> genai.GenerativeModel:
-    global _model
-    if _model is None:
+def _get_client() -> genai.Client:
+    global _client
+    if _client is None:
         if not GEMINI_API_KEY:
             raise EnvironmentError(
                 "GEMINI_API_KEY is not set. "
                 "Add it to Streamlit Cloud secrets or your .env file."
             )
-        genai.configure(api_key=GEMINI_API_KEY)
-        _model = genai.GenerativeModel(
-            model_name=GEMINI_MODEL,
-            generation_config=genai.types.GenerationConfig(**LLM_CONFIG),
-        )
-        logger.info("Gemini model '%s' initialised.", GEMINI_MODEL)
-    return _model
+        _client = genai.Client(api_key=GEMINI_API_KEY)
+        logger.info("Gemini client initialised with model '%s'.", GEMINI_MODEL)
+    return _client
 
 
 @retry(max_attempts=3, delay=2.0, exceptions=(Exception,))
 def generate(prompt: str) -> str:
-    model = _get_model()
+    client = _get_client()
     logger.debug("Sending prompt to Gemini (length=%d chars).", len(prompt))
-    response = model.generate_content(prompt)
+
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=LLM_CONFIG["temperature"],
+            top_p=LLM_CONFIG["top_p"],
+            top_k=LLM_CONFIG["top_k"],
+            max_output_tokens=LLM_CONFIG["max_output_tokens"],
+        ),
+    )
+
     if not response.text:
-        finish_reason = getattr(response.candidates[0], "finish_reason", "UNKNOWN")
-        raise RuntimeError(f"Gemini returned empty response. finish_reason={finish_reason}")
+        raise RuntimeError("Gemini returned an empty response.")
+
     logger.debug("Received response (length=%d chars).", len(response.text))
     return response.text
